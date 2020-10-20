@@ -1,4 +1,5 @@
 #include <boost/gil.hpp>
+#include <boost/gil/algorithm.hpp>
 #include <boost/gil/extension/dynamic_image/image_view_factory.hpp>
 #include <boost/gil/extension/io/png.hpp>
 #include <boost/gil/extension/io/png/tags.hpp>
@@ -20,17 +21,25 @@ int main()
     taskflow.name("Gradient computation");
 
     gil::gray8_image_t molecule_image;
-    gil::gray16s_image_t dx;
-    gil::gray16s_image_t dy;
-    gil::gray16s_image_t gradient;
-    auto [read_image, compute_dx, compute_dy, save_dx, save_dy, compute_gradient, save_gradient] =
+    gil::gray32f_image_t input_image;
+    gil::gray32f_image_t dx;
+    gil::gray32f_image_t dy;
+    gil::gray32f_image_t gradient;
+    auto [read_image, convert_image, compute_dx, compute_dy, save_dx, save_dy, compute_gradient,
+          save_gradient] =
         taskflow.emplace(
             [&molecule_image, &dx, &dy, &gradient]()
             {
                 gil::read_image("gray-molecule.png", molecule_image, gil::png_tag{});
-                dx = gil::gray16s_image_t(molecule_image.dimensions());
-                dy = gil::gray16s_image_t(molecule_image.dimensions());
-                gradient = gil::gray16s_image_t(molecule_image.dimensions());
+                dx = gil::gray32f_image_t(molecule_image.dimensions());
+                dy = gil::gray32f_image_t(molecule_image.dimensions());
+                gradient = gil::gray32f_image_t(molecule_image.dimensions());
+            },
+            [&molecule_image, &input_image]()
+            {
+                auto molecule = gil::view(molecule_image);
+                auto input = gil::view(input_image);
+                gil::copy_and_convert_pixels(molecule, input);
             },
             [&molecule_image, &dx]()
             {
@@ -44,22 +53,21 @@ int main()
             [&molecule_image, &dy]()
             {
                 auto sobel_y = gil::generate_dy_sobel();
-                auto input =
-                    gil::color_converted_view<gil::gray16s_pixel_t>(gil::view(molecule_image));
+                auto input = gil::view(molecule_image);
                 auto dest = gil::view(dy);
 
                 gil::detail::convolve_2d(input, sobel_y, dest);
             },
             [&dx]()
             {
-                auto dx16_view = gil::view(dx);
-                auto dx_view = gil::color_converted_view<gil::gray8_pixel_t>(dx16_view);
+                auto dx32f_view = gil::view(dx);
+                auto dx_view = gil::color_converted_view<gil::gray8_pixel_t>(dx32f_view);
                 gil::write_view("gray-molecule-dx.png", dx_view, gil::png_tag{});
             },
             [&dy]()
             {
-                auto dy16_view = gil::view(dy);
-                auto dy_view = gil::color_converted_view<gil::gray8_pixel_t>(dy16_view);
+                auto dy32f_view = gil::view(dy);
+                auto dy_view = gil::color_converted_view<gil::gray8_pixel_t>(dy32f_view);
                 gil::write_view("gray-molecule-dy.png", dy_view, gil::png_tag{});
             },
             [&dx, &dy, &gradient]()
@@ -83,6 +91,7 @@ int main()
             });
 
     read_image.name("read_image");
+    convert_image.name("convert_image");
     compute_dx.name("compute_dx");
     compute_dy.name("compute_dy");
     save_dx.name("save_dx");
@@ -90,7 +99,8 @@ int main()
     compute_gradient.name("compute_gradient");
     save_gradient.name("save_gradient");
 
-    read_image.precede(compute_dx, compute_dy);
+    read_image.precede(convert_image);
+    convert_image.precede(compute_dx, compute_dy);
     compute_dx.precede(save_dx);
     compute_dy.precede(save_dy);
     compute_gradient.succeed(compute_dx, compute_dy);
