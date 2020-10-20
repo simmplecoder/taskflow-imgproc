@@ -4,6 +4,8 @@
 #include <boost/gil/extension/io/png.hpp>
 #include <flash/core.hpp>
 
+#include <iostream>
+
 namespace shino {
 std::size_t ceil(std::size_t nominator, std::size_t denominator) {
   return static_cast<std::size_t>(std::ceil(static_cast<double>(nominator) /
@@ -49,6 +51,39 @@ int main() {
   blaze::DynamicMatrix<float> input(molecule_image.height(),
                                     molecule_image.width());
   flash::to_matrix(gil::view(molecule_image), input);
+  std::cout << "is input zero? " << blaze::isZero(input) << '\n';
+  float *dev_input = nullptr;
+  cudaMalloc(&dev_input, sizeof(float) * input.rows() * input.columns());
+  cudaMemcpy(dev_input, input.data(),
+             sizeof(float) * input.rows() * input.columns(),
+             cudaMemcpyHostToDevice);
+
+  constexpr std::size_t kernel_size = 9;
+  float kernel[kernel_size] = {1, 0, -1, 2, 0, -2, 1, 0, -1};
+  float *dev_kernel = nullptr;
+  cudaMalloc(&dev_kernel, sizeof(kernel));
+  cudaMemcpy(dev_kernel, kernel, sizeof(float) * kernel_size,
+             cudaMemcpyHostToDevice);
+
+  blaze::DynamicMatrix<float> output(input.rows(), input.columns());
+  float *dev_output = nullptr;
+  cudaMalloc(&dev_output, sizeof(float) * input.rows() * input.columns());
+
+  dim3 threadsPerBlock(32, 32);
+  dim3 blocks(30, 40);
+  shino::convolve<<<blocks, threadsPerBlock>>>(
+      dev_input, dev_kernel, dev_output, input.columns(), input.rows(), 3, 3);
+
+  cudaMemcpy(output.data(), dev_output,
+             sizeof(float) * output.rows() * output.columns(),
+             cudaMemcpyDeviceToHost);
+  auto mapped = flash::remap_to<gil::uint8_t>(output);
+  auto output_image = flash::from_matrix<gil::gray8_image_t>(mapped);
+  gil::write_view("convolved-cuda.png", gil::view(output_image),
+                  gil::png_tag{});
+
+  std::cout << "is output zero? " << blaze::isZero(output) << '\n';
+
   /*  gil::gray8_image_t molecule_image;
     gil::read_image("gray-molecule.png", molecule_image, gil::png_tag{});
     gil::gray32f_image_t input_image(molecule_image.dimensions());
